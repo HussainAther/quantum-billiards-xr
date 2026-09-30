@@ -1,0 +1,12 @@
+{
+  "type": "module",
+  "scripts": {
+    "build:assets": "node tools/build-quantum-ball.mjs",
+    "test:interactivity": "node tools/build-quantum-ball.mjs && node tests/interactivity-runtime.test.mjs",
+    "test:impact": "node tests/impact-system.test.mjs",
+    "test": "npm run test:interactivity && npm run test:impact && npm run test:field && npm run test:experience",
+    "test:field": "node tests/field-surface-material.test.mjs",
+    "test:experience": "node tests/experience.test.mjs",
+    "package:itch": "node tools/build-quantum-ball.mjs && node tools/package-itch.mjs"
+  }
+}
