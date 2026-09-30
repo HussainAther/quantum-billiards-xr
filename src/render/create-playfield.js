@@ -1,88 +1,200 @@
 import * as THREE from 'three'
+import { getArena, boundaryPoints } from '../core/arenas.js'
+
+function toWorld(point, height = 0) {
+  return new THREE.Vector3(
+    point.x,
+    height,
+    point.y
+  )
+}
+
+function cylinderBetween(a, b, radius, material) {
+  const midpoint = new THREE.Vector3()
+    .addVectors(a, b)
+    .multiplyScalar(0.5)
+
+  const direction = new THREE.Vector3()
+    .subVectors(b, a)
+
+  const length = direction.length()
+
+  const geometry = new THREE.CylinderGeometry(
+    radius,
+    radius,
+    length,
+    10
+  )
+
+  const mesh = new THREE.Mesh(geometry, material)
+
+  mesh.position.copy(midpoint)
+
+  mesh.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    direction.clone().normalize()
+  )
+
+  return mesh
+}
 
 export function createPlayfield() {
+  const arena = getArena('circle')
+
   const root = new THREE.Group()
   root.name = 'QuantumBilliardsPlayfield'
 
-  // Circular play surface
+  //
+  // PLAY SURFACE
+  //
+
   const tableGeometry = new THREE.CylinderGeometry(
-    1,
-    1,
-    0.08,
+    arena.radius,
+    arena.radius,
+    0.055,
     96
   )
 
   const tableMaterial = new THREE.MeshStandardMaterial({
-    color: 0x182033,
-    roughness: 0.55,
-    metalness: 0.15,
+    color: 0x071018,
+    roughness: 0.36,
+    metalness: 0.12,
   })
 
-  const table = new THREE.Mesh(tableGeometry, tableMaterial)
-  table.position.y = 0
+  const table = new THREE.Mesh(
+    tableGeometry,
+    tableMaterial
+  )
+
+  table.position.y = -0.025
+
+  table.name = 'PlaySurface'
   root.add(table)
 
-  // Outer rail
-  const railGeometry = new THREE.TorusGeometry(
-    1,
-    0.055,
-    16,
-    96
-  )
+  //
+  // BOUNDARY / RAILS
+  //
+
+  const boundaryGroup = new THREE.Group()
+  boundaryGroup.name = 'Boundary'
 
   const railMaterial = new THREE.MeshStandardMaterial({
-    color: 0x5d76a8,
-    roughness: 0.3,
-    metalness: 0.45,
+    color: 0x36d9e8,
+    emissive: 0x083f48,
+    emissiveIntensity: 1.1,
+    roughness: 0.28,
+    metalness: 0.32,
   })
 
-  const rail = new THREE.Mesh(railGeometry, railMaterial)
-  rail.rotation.x = Math.PI / 2
-  rail.position.y = 0.07
-  root.add(rail)
+  const points = boundaryPoints(arena)
 
-  // Source ball
-  const sourceGeometry = new THREE.SphereGeometry(
-    0.08,
-    32,
-    32
-  )
+  for (let i = 0; i < points.length; i++) {
+    const current = points[i]
+    const next = points[(i + 1) % points.length]
+
+    const a = toWorld(current, 0.055)
+    const b = toWorld(next, 0.055)
+
+    const rail = cylinderBetween(
+      a,
+      b,
+      0.013,
+      railMaterial
+    )
+
+    boundaryGroup.add(rail)
+  }
+
+  root.add(boundaryGroup)
+
+  //
+  // SOURCE BALL
+  //
 
   const sourceMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
+    color: 0xffc64b,
+    emissive: 0x503000,
+    emissiveIntensity: 1,
+    roughness: 0.25,
   })
 
   const sourceBall = new THREE.Mesh(
-    sourceGeometry,
+    new THREE.SphereGeometry(0.055, 32, 24),
     sourceMaterial
   )
 
-  sourceBall.position.set(-0.45, 0.13, 0.15)
+  sourceBall.position.set(
+    arena.source.x,
+    0.09,
+    arena.source.y
+  )
+
   sourceBall.name = 'SourceBall'
   root.add(sourceBall)
 
-  // Target
-  const targetGeometry = new THREE.TorusGeometry(
-    0.11,
-    0.025,
-    16,
-    48
+  //
+  // SOURCE HALO
+  //
+
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(0.075, 0.11, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0xffc64b,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide,
+    })
   )
 
-  const targetMaterial = new THREE.MeshStandardMaterial({
-    color: 0x66ffcc,
-    emissive: 0x114433,
+  halo.rotation.x = -Math.PI / 2
+  halo.position.set(
+    arena.source.x,
+    0.035,
+    arena.source.y
+  )
+
+  root.add(halo)
+
+  //
+  // TARGETS
+  //
+
+  const targetGroup = new THREE.Group()
+  targetGroup.name = 'Targets'
+
+  arena.targets.forEach((targetData, index) => {
+    const target = new THREE.Mesh(
+      new THREE.RingGeometry(0.07, 0.105, 48),
+      new THREE.MeshStandardMaterial({
+        color: 0xff4fb7,
+        emissive: 0x64183f,
+        emissiveIntensity: 1.5,
+        side: THREE.DoubleSide,
+      })
+    )
+
+    target.rotation.x = -Math.PI / 2
+
+    target.position.set(
+      targetData.x,
+      0.038,
+      targetData.y
+    )
+
+    target.name = `Target-${index}`
+
+    targetGroup.add(target)
   })
 
-  const target = new THREE.Mesh(
-    targetGeometry,
-    targetMaterial
-  )
+  root.add(targetGroup)
 
-  target.rotation.x = Math.PI / 2
-  target.position.set(0.45, 0.095, -0.2)
-  target.name = 'Target'
-  root.add(target)
+  //
+  // Metadata useful later for XR interaction.
+  //
+
+  root.userData.arena = arena.id
+  root.userData.sourceBall = sourceBall
+  root.userData.targetGroup = targetGroup
 
   return root
 }
