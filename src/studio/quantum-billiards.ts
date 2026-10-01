@@ -1,4 +1,9 @@
 import * as ecs from '@8thwall/ecs'
+import { CIRCLE_CONFIG } from '../core/circle-config.ts'
+import { shotVelocity, stepBall } from '../core/simulation.ts'
+
+// Runtime-only diagnostics; default is off. Set in the Simulator console.
+const debugMode = () => (globalThis as any).__QB_DEBUG_MODE || 'off'
 
 const QuantumBilliards = ecs.registerComponent({
   name: 'Quantum Billiards',
@@ -15,25 +20,14 @@ const QuantumBilliards = ecs.registerComponent({
     schemaAttribute,
     defineState,
   }) => {
-    const arenaRadius = 0.84
-    const ballRadius = 0.055
-
-    const sourceX = -0.48
-    const sourceZ = 0.34
-
-    const targetHitRadius = 0.11
-
-    // Shot tuning
-    const minDrag = 0.025
-    const maxSpeed = 6.0
-    const powerScale = 10.0
-
-    // Lower = more friction.
-    // 0.9985 keeps the ball moving much longer than 0.995.
-    const friction = 0.9985
+    const { source, minDrag } = CIRCLE_CONFIG
+    const sourceX = source.x
+    const sourceZ = source.z
 
     const aimLineBaseLength = 1.0
 
+    let debugTick = 0
+    let previousDebugPosition: {x: number, y: number, z: number} | undefined
     let vx = 0
     let vz = 0
 
@@ -45,6 +39,13 @@ const QuantumBilliards = ecs.registerComponent({
 
     let currentX = 0
     let currentY = 0
+
+    // SCREEN_TOUCH_END can report a point back near the touch-start position
+    // in the Studio/device input path. Preserve the strongest MOVE sample so
+    // release cannot accidentally collapse a real drag to ~zero.
+    let bestDx = 0
+    let bestDy = 0
+    let bestDragLength = 0
 
     const stopBall = () => {
       vx = 0
@@ -130,11 +131,8 @@ const QuantumBilliards = ecs.registerComponent({
         1.2
       )
 
-      const ballPosition =
-        ecs.Position.get(
-          world,
-          data.ball
-        )
+      // ECS get() returns a shared cursor; snapshot before mutating AimLine.
+      const ballPosition = {...ecs.Position.get(world, data.ball)}
 
       //
       // AIM LINE POSITION
@@ -201,6 +199,7 @@ const QuantumBilliards = ecs.registerComponent({
     const beginDrag = (
       event: any
     ) => {
+      if (debugMode() === 'forced') return
       if (moving) {
         console.log('IGNORED TOUCH: ball moving')
         return
@@ -219,6 +218,9 @@ const QuantumBilliards = ecs.registerComponent({
 
       currentX = startX
       currentY = startY
+      bestDx = 0
+      bestDy = 0
+      bestDragLength = 0
 
       dragging = true
 
@@ -234,6 +236,7 @@ const QuantumBilliards = ecs.registerComponent({
     const updateDrag = (
       event: any
     ) => {
+      if (debugMode() === 'forced') return
       if (!dragging || moving) {
         return
       }
@@ -248,12 +251,23 @@ const QuantumBilliards = ecs.registerComponent({
       currentX = position.x
       currentY = position.y
 
+      const dx = currentX - startX
+      const dy = currentY - startY
+      const dragLength = Math.hypot(dx, dy)
+
+      if (dragLength > bestDragLength) {
+        bestDx = dx
+        bestDy = dy
+        bestDragLength = dragLength
+      }
+
       updateAimLine()
     }
 
     const releaseShot = (
       event: any
     ) => {
+      if (debugMode() === 'forced') return
       if (!dragging || moving) {
         return
       }
@@ -261,64 +275,44 @@ const QuantumBilliards = ecs.registerComponent({
       const position =
         event.data?.position
 
+      // Only trust the touch-end coordinate if it extends the drag. Some
+      // Studio/device paths report touch-end close to touch-start.
       if (position) {
-        currentX = position.x
-        currentY = position.y
+        const endDx = position.x - startX
+        const endDy = position.y - startY
+        const endLength = Math.hypot(endDx, endDy)
+
+        if (endLength > bestDragLength) {
+          bestDx = endDx
+          bestDy = endDy
+          bestDragLength = endLength
+        }
       }
 
       dragging = false
-
-      const dx =
-        currentX - startX
-
-      const dy =
-        currentY - startY
-
-      const dragLength =
-        Math.hypot(dx, dy)
-
       hideAimLine()
 
-      if (dragLength < minDrag) {
-        console.log(
-          'SHOT CANCELLED: not enough force'
-        )
+      console.log('SHOT RELEASE', {
+        dx: bestDx,
+        dy: bestDy,
+        dragLength: bestDragLength,
+        minDrag,
+      })
+
+      const velocity = shotVelocity(bestDx, bestDy)
+      if (!velocity) {
+        console.log('SHOT CANCELLED: not enough force', {
+          dragLength: bestDragLength,
+          minDrag,
+        })
         return
       }
 
-      const dirX =
-        dx / dragLength
-
-      const dirZ =
-        -dy / dragLength
-
-      //
-      // Much stronger power curve.
-      //
-
-      const speed =
-        Math.min(
-          dragLength *
-            powerScale,
-          maxSpeed
-        )
-
-      vx = dirX * speed
-      vz = dirZ * speed
-
+      vx = velocity.x
+      vz = velocity.z
       moving = true
 
-      console.log(
-        'SHOT',
-        {
-          dx,
-          dy,
-          dragLength,
-          speed,
-          vx,
-          vz,
-        }
-      )
+      console.log('SHOT VELOCITY', {vx, vz})
     }
 
     defineState('running')
@@ -367,154 +361,51 @@ const QuantumBilliards = ecs.registerComponent({
           return
         }
 
+        const mode = debugMode()
+        if (mode === 'forced') {
+          const before = {...ecs.Position.get(world, data.ball)}
+          ecs.Position.mutate(world, data.ball, (position) => {
+            position.x += 0.02
+            return false
+          })
+          const after = {...ecs.Position.get(world, data.ball)}
+          if (debugTick < 3 || debugTick % 60 === 0) {
+            console.log('QB FORCED', JSON.stringify({tick: debugTick,
+              ball: String(data.ball), before, after, previous: previousDebugPosition,
+              persists: !previousDebugPosition || Math.abs(before.x - previousDebugPosition.x) < 0.00001,
+              rootPosition: {...ecs.Position.get(world, eid)},
+              rootScale: {...ecs.Scale.get(world, eid)},
+            }))
+          }
+          previousDebugPosition = after
+          debugTick++
+          return
+        }
+
         if (!moving) {
           return
         }
 
-        const dt = 1 / 60
-
-        ecs.Position.mutate(
-          world,
-          data.ball,
-          (position) => {
-            //
-            // MOVE BALL
-            //
-
-            position.x +=
-              vx * dt
-
-            position.z +=
-              vz * dt
-
-            //
-            // CIRCLE WALL COLLISION
-            //
-
-            const distance =
-              Math.hypot(
-                position.x,
-                position.z
-              )
-
-            const maxDistance =
-              arenaRadius -
-              ballRadius
-
-            if (
-              distance >
-              maxDistance
-            ) {
-              const nx =
-                position.x /
-                distance
-
-              const nz =
-                position.z /
-                distance
-
-              const dot =
-                vx * nx +
-                vz * nz
-
-              vx -=
-                2 * dot * nx
-
-              vz -=
-                2 * dot * nz
-
-              position.x =
-                nx *
-                maxDistance
-
-              position.z =
-                nz *
-                maxDistance
-
-              console.log(
-                'WALL BOUNCE',
-                vx,
-                vz
-              )
-            }
-
-            //
-            // TARGET COLLISION
-            //
-
-            if (data.target) {
-              const targetPosition =
-                ecs.Position.get(
-                  world,
-                  data.target
-                )
-
-              const targetDx =
-                position.x -
-                targetPosition.x
-
-              const targetDz =
-                position.z -
-                targetPosition.z
-
-              const targetDistance =
-                Math.hypot(
-                  targetDx,
-                  targetDz
-                )
-
-              if (
-                targetDistance <
-                targetHitRadius
-              ) {
-                console.log(
-                  'TARGET HIT'
-                )
-
-                vx = 0
-                vz = 0
-                moving = false
-
-                position.x =
-                  sourceX
-
-                position.z =
-                  sourceZ
-
-                return false
-              }
-            }
-
-            //
-            // FRICTION
-            //
-
-            vx *= friction
-            vz *= friction
-
-            //
-            // STOP WHEN VERY SLOW
-            //
-
-            const speed =
-              Math.hypot(
-                vx,
-                vz
-              )
-
-            if (
-              speed < 0.01
-            ) {
-              stopBall()
-            }
-
-            //
-            // Never alter Y.
-            //
-
-            return false
-          }
-        )
+        // Another Position.get/mutate retargets the same ECS cursor.
+        const position = {...ecs.Position.get(world, data.ball)}
+        const observedBall = {...position}
+        const target = data.target ? {...ecs.Position.get(world, data.target)} : undefined
+        const result = stepBall({
+          position: {x: position.x, z: position.z},
+          velocity: {x: vx, z: vz},
+        }, target)
+        if (mode === 'simulation' && (debugTick < 3 || debugTick % 60 === 0 || result.hit)) {
+          console.log('QB SIMULATION', JSON.stringify({observedBall, inputPosition: {...position}, target: target && {...target}, inputVelocity: {x: vx, z: vz}, result}))
+        }
+        debugTick++
+        vx = result.velocity.x
+        vz = result.velocity.z
+        moving = result.moving
+        ecs.Position.mutate(world, data.ball, (position) => {
+          position.x = result.position.x
+          position.z = result.position.z
+          return false
+        })
       })
   },
 })

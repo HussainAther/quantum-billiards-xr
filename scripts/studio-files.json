@@ -1,0 +1,9 @@
+[
+  ["src/studio/quantum-billiards.ts", "quantum-billiards.ts"],
+  ["src/core/arenas.js", "core/arenas.js"],
+  ["src/core/circle-config.ts", "core/circle-config.ts"],
+  ["src/core/physics.ts", "core/physics.ts"],
+  ["src/core/simulation.ts", "core/simulation.ts"],
+  ["src/core/trajectory.ts", "core/trajectory.ts"],
+  ["src/core/game-state.ts", "core/game-state.ts"]
+]

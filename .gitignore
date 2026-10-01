@@ -1,3 +1,7 @@
 node_modules/
 dist/
 .DS_Store
+
+studio-sync.local.json
+studio-project/*
+!studio-project/README.md
