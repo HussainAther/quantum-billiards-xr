@@ -51,6 +51,41 @@ const TRAJECTORY_HOLD_TICKS = 30
 const TARGET_PULSE_TICKS = 18
 const TARGET_PULSE_AMOUNT = 0.35
 
+//
+// Quantum uncertainty preview.
+//
+// Four neighboring initial conditions are rendered around the
+// authoritative trajectory. They are visual only: scoring,
+// measurement, and live physics continue to use the central path.
+//
+const GHOST_PATH_COUNT = 4
+const GHOST_SEGMENTS_PER_PATH = 6
+const GHOST_OPACITY = 0.18
+const GHOST_WIDTH = 0.005
+const GHOST_Y_OFFSET = 0.006
+
+// Circle / Integrable should remain fairly coherent. Later arenas can
+// increase this multiplier to make chaotic divergence visually obvious.
+const GHOST_BASE_ANGLE_SPREAD = 0.018
+
+//
+// Animated probability landscape.
+//
+// The field is sampled directly from circleFieldValue(), the same
+// quantum field used by receiver measurement. Runtime-created cells
+// rise and brighten with local probability density.
+//
+const FIELD_GRID_HALF = 4
+const FIELD_GRID_SPACING = 0.17
+const FIELD_CELL_SIZE = 0.065
+const FIELD_BASE_Y = 0.038
+const FIELD_MIN_HEIGHT = 0.002
+const FIELD_MAX_HEIGHT = 0.045
+const FIELD_UPDATE_EVERY_TICKS = 3
+const FIELD_BASE_OPACITY = 0.055
+const FIELD_OPACITY_RANGE = 0.26
+const FIELD_COLLAPSE_PULSE_TICKS = 24
+
 
 const debugMode = () =>
   (globalThis as any).__QB_DEBUG_MODE || 'off'
@@ -188,6 +223,23 @@ const QuantumBilliards = ecs.registerComponent({
 
     let finalChallengeBonus =
       0
+
+    // Runtime-created line segments used for the uncertainty ensemble.
+    // Each inner array represents one neighboring trajectory.
+    const ghostTrajectoryEntities:
+      bigint[][] = []
+
+    type ProbabilityFieldCell = {
+      entity: bigint
+      x: number
+      z: number
+    }
+
+    const probabilityFieldCells:
+      ProbabilityFieldCell[] = []
+
+    let fieldTick = 0
+    let fieldCollapsePulseTicks = 0
 
 
     const updateChallengeHud = () => {
@@ -340,6 +392,422 @@ const QuantumBilliards = ecs.registerComponent({
     }
 
 
+    const hideGhostTrajectories = () => {
+      for (
+        const path
+        of ghostTrajectoryEntities
+      ) {
+        for (
+          const entity
+          of path
+        ) {
+          hideEntity(
+            entity
+          )
+        }
+      }
+    }
+
+
+    const createGhostTrajectories = () => {
+      if (
+        ghostTrajectoryEntities.length >
+          0
+      ) {
+        return
+      }
+
+      const runtimeEcs =
+        ecs as any
+
+      if (
+        typeof world.createEntity !==
+          'function' ||
+        typeof world.setParent !==
+          'function' ||
+        !runtimeEcs.BoxGeometry?.set ||
+        !runtimeEcs.Material?.set
+      ) {
+        // Headless adapter tests intentionally use a minimal ECS mock.
+        return
+      }
+
+      for (
+        let pathIndex = 0;
+        pathIndex < GHOST_PATH_COUNT;
+        pathIndex++
+      ) {
+        const path:
+          bigint[] = []
+
+        for (
+          let segmentIndex = 0;
+          segmentIndex < GHOST_SEGMENTS_PER_PATH;
+          segmentIndex++
+        ) {
+          const entity =
+            world.createEntity()
+
+          world.setParent(
+            entity,
+            eid
+          )
+
+          runtimeEcs.BoxGeometry.set(
+            world,
+            entity,
+            {
+              width: 1,
+              height: 1,
+              depth: 1,
+            }
+          )
+
+          runtimeEcs.Material.set(
+            world,
+            entity,
+            {
+              r: 0,
+              g: 229,
+              b: 255,
+              opacity:
+                GHOST_OPACITY,
+              roughness: 0,
+              metalness: 0,
+              emissiveIntensity:
+                0.35,
+              depthWrite:
+                false,
+              forceTransparent:
+                true,
+            }
+          )
+
+          runtimeEcs.Position.set(
+            world,
+            entity,
+            {
+              x: 0,
+              y: 0,
+              z: 0,
+            }
+          )
+
+          runtimeEcs.Quaternion.set(
+            world,
+            entity,
+            {
+              x: 0,
+              y: 0,
+              z: 0,
+              w: 1,
+            }
+          )
+
+          runtimeEcs.Scale.set(
+            world,
+            entity,
+            {
+              x: 0.001,
+              y: 0.001,
+              z: 0.001,
+            }
+          )
+
+          path.push(
+            entity
+          )
+        }
+
+        ghostTrajectoryEntities.push(
+          path
+        )
+      }
+    }
+
+
+    const createProbabilityField = () => {
+      if (
+        probabilityFieldCells.length >
+          0
+      ) {
+        return
+      }
+
+      const runtimeEcs =
+        ecs as any
+
+      if (
+        typeof world.createEntity !==
+          'function' ||
+        typeof world.setParent !==
+          'function' ||
+        !runtimeEcs.BoxGeometry?.set ||
+        !runtimeEcs.Material?.set ||
+        !runtimeEcs.Position?.set ||
+        !runtimeEcs.Scale?.set
+      ) {
+        // Headless adapter tests intentionally use a minimal ECS mock.
+        return
+      }
+
+      const fieldRadius =
+        CIRCLE_CONFIG.arenaRadius -
+        CIRCLE_CONFIG.ballRadius -
+        0.035
+
+      for (
+        let gz = -FIELD_GRID_HALF;
+        gz <= FIELD_GRID_HALF;
+        gz++
+      ) {
+        for (
+          let gx = -FIELD_GRID_HALF;
+          gx <= FIELD_GRID_HALF;
+          gx++
+        ) {
+          const x =
+            gx *
+            FIELD_GRID_SPACING
+
+          const z =
+            gz *
+            FIELD_GRID_SPACING
+
+          if (
+            Math.hypot(
+              x,
+              z
+            ) > fieldRadius
+          ) {
+            continue
+          }
+
+          const entity =
+            world.createEntity()
+
+          world.setParent(
+            entity,
+            eid
+          )
+
+          runtimeEcs.BoxGeometry.set(
+            world,
+            entity,
+            {
+              width: 1,
+              height: 1,
+              depth: 1,
+            }
+          )
+
+          runtimeEcs.Material.set(
+            world,
+            entity,
+            {
+              r: 0,
+              g: 229,
+              b: 255,
+              opacity:
+                FIELD_BASE_OPACITY,
+              roughness: 0.15,
+              metalness: 0,
+              emissiveIntensity:
+                0.55,
+              depthWrite:
+                false,
+              forceTransparent:
+                true,
+            }
+          )
+
+          runtimeEcs.Position.set(
+            world,
+            entity,
+            {
+              x,
+              y:
+                FIELD_BASE_Y,
+              z,
+            }
+          )
+
+          runtimeEcs.Scale.set(
+            world,
+            entity,
+            {
+              x:
+                FIELD_CELL_SIZE,
+              y:
+                FIELD_MIN_HEIGHT,
+              z:
+                FIELD_CELL_SIZE,
+            }
+          )
+
+          probabilityFieldCells.push({
+            entity,
+            x,
+            z,
+          })
+        }
+      }
+    }
+
+
+    const updateProbabilityField = (
+      force = false
+    ) => {
+      if (
+        probabilityFieldCells.length ===
+          0
+      ) {
+        return
+      }
+
+      fieldTick++
+
+      if (
+        !force &&
+        fieldTick %
+          FIELD_UPDATE_EVERY_TICKS !==
+          0
+      ) {
+        return
+      }
+
+      const runtimeEcs =
+        ecs as any
+
+      const time =
+        nowMs()
+
+      const pulseProgress =
+        fieldCollapsePulseTicks > 0
+          ? 1 -
+            fieldCollapsePulseTicks /
+              FIELD_COLLAPSE_PULSE_TICKS
+          : 0
+
+      const pulse =
+        fieldCollapsePulseTicks > 0
+          ? 1 +
+            0.65 *
+              Math.sin(
+                Math.PI *
+                  pulseProgress
+              )
+          : 1
+
+      for (
+        const cell
+        of probabilityFieldCells
+      ) {
+        const density =
+          circleFieldValue(
+            {
+              x: cell.x,
+              z: cell.z,
+            },
+            time,
+            challenge.energy
+          )
+
+        const shaped =
+          Math.pow(
+            Math.max(
+              0,
+              Math.min(
+                1,
+                density
+              )
+            ),
+            1.35
+          )
+
+        const height =
+          FIELD_MIN_HEIGHT +
+          FIELD_MAX_HEIGHT *
+            shaped *
+            pulse
+
+        ecs.Position.mutate(
+          world,
+          cell.entity,
+          (position) => {
+            position.x =
+              cell.x
+
+            position.y =
+              FIELD_BASE_Y +
+              height * 0.5
+
+            position.z =
+              cell.z
+
+            return false
+          }
+        )
+
+        ecs.Scale.mutate(
+          world,
+          cell.entity,
+          (scale) => {
+            const widthPulse =
+              0.82 +
+              0.18 * shaped
+
+            scale.x =
+              FIELD_CELL_SIZE *
+              widthPulse
+
+            scale.y =
+              height
+
+            scale.z =
+              FIELD_CELL_SIZE *
+              widthPulse
+
+            return false
+          }
+        )
+
+        if (
+          runtimeEcs.Material?.mutate
+        ) {
+          runtimeEcs.Material.mutate(
+            world,
+            cell.entity,
+            (material: any) => {
+              material.opacity =
+                Math.min(
+                  0.5,
+                  FIELD_BASE_OPACITY +
+                    FIELD_OPACITY_RANGE *
+                      shaped *
+                      pulse
+                )
+
+              material.emissiveIntensity =
+                0.25 +
+                1.15 *
+                  shaped *
+                  pulse
+
+              return false
+            }
+          )
+        }
+      }
+
+      if (
+        fieldCollapsePulseTicks > 0
+      ) {
+        fieldCollapsePulseTicks--
+      }
+    }
+
+
     const trajectoryEntities = () => {
       const data =
         schemaAttribute.get(
@@ -374,6 +842,8 @@ const QuantumBilliards = ecs.registerComponent({
           entity
         )
       }
+
+      hideGhostTrajectories()
     }
 
 
@@ -486,6 +956,112 @@ const QuantumBilliards = ecs.registerComponent({
           scale.x = 0.012
           scale.y = 0.006
           scale.z = length
+
+          return false
+        }
+      )
+    }
+
+
+    const showGhostSegment = (
+      entity: bigint,
+      start: Point,
+      end: Point,
+      y: number
+    ) => {
+      const dx =
+        end.x -
+        start.x
+
+      const dz =
+        end.z -
+        start.z
+
+      const length =
+        Math.hypot(
+          dx,
+          dz
+        )
+
+      if (
+        length <
+        1e-6
+      ) {
+        hideEntity(
+          entity
+        )
+
+        return
+      }
+
+      const centerX =
+        (
+          start.x +
+          end.x
+        ) * 0.5
+
+      const centerZ =
+        (
+          start.z +
+          end.z
+        ) * 0.5
+
+      const angle =
+        Math.atan2(
+          dx,
+          dz
+        )
+
+      ecs.Position.mutate(
+        world,
+        entity,
+        (position) => {
+          position.x =
+            centerX
+
+          position.y =
+            y
+
+          position.z =
+            centerZ
+
+          return false
+        }
+      )
+
+      ecs.Quaternion.mutate(
+        world,
+        entity,
+        (rotation) => {
+          const half =
+            angle *
+            0.5
+
+          rotation.x = 0
+          rotation.y =
+            Math.sin(
+              half
+            )
+          rotation.z = 0
+          rotation.w =
+            Math.cos(
+              half
+            )
+
+          return false
+        }
+      )
+
+      ecs.Scale.mutate(
+        world,
+        entity,
+        (scale) => {
+          scale.x =
+            GHOST_WIDTH
+          scale.y =
+            0.003
+          scale.z =
+            length
 
           return false
         }
@@ -642,6 +1218,141 @@ const QuantumBilliards = ecs.registerComponent({
       return {
         ball,
         samples,
+      }
+    }
+
+
+    const rotatedDrag = (
+      dx: number,
+      dy: number,
+      angle: number
+    ) => {
+      const c =
+        Math.cos(
+          angle
+        )
+
+      const s =
+        Math.sin(
+          angle
+        )
+
+      return {
+        dx:
+          dx * c -
+          dy * s,
+
+        dy:
+          dx * s +
+          dy * c,
+      }
+    }
+
+
+    const ghostAngleOffsets = () => {
+      // The focus epsilon contributes a small physically-motivated
+      // uncertainty term, while the base spread keeps the effect legible
+      // on a phone screen for the highly coherent Circle challenge.
+      const spread =
+        GHOST_BASE_ANGLE_SPREAD *
+          (
+            1 +
+            Math.min(
+              2,
+              focus.epsilon *
+                80
+            )
+          )
+
+      return [
+        -2 * spread,
+        -spread,
+        spread,
+        2 * spread,
+      ]
+    }
+
+
+    const updateGhostTrajectories = (
+      dx: number,
+      dy: number,
+      y: number
+    ) => {
+      if (
+        ghostTrajectoryEntities.length ===
+          0
+      ) {
+        return
+      }
+
+      const offsets =
+        ghostAngleOffsets()
+
+      for (
+        let pathIndex = 0;
+        pathIndex < ghostTrajectoryEntities.length;
+        pathIndex++
+      ) {
+        const entities =
+          ghostTrajectoryEntities[
+            pathIndex
+          ]
+
+        const offset =
+          offsets[
+            pathIndex
+          ] ?? 0
+
+        const perturbed =
+          rotatedDrag(
+            dx,
+            dy,
+            offset
+          )
+
+        const prediction =
+          predictionForDrag(
+            perturbed.dx,
+            perturbed.dy,
+            GHOST_SEGMENTS_PER_PATH
+          )
+
+        const segments =
+          samplesToSegments(
+            prediction.samples
+          )
+
+        for (
+          let segmentIndex = 0;
+          segmentIndex < entities.length;
+          segmentIndex++
+        ) {
+          const entity =
+            entities[
+              segmentIndex
+            ]
+
+          const segment =
+            segments[
+              segmentIndex
+            ]
+
+          if (!segment) {
+            hideEntity(
+              entity
+            )
+
+            continue
+          }
+
+          showGhostSegment(
+            entity,
+            segment.start,
+            segment.end,
+            y +
+              GHOST_Y_OFFSET
+          )
+        }
       }
     }
 
@@ -905,6 +1616,13 @@ const QuantumBilliards = ecs.registerComponent({
       const y =
         ball.y +
         0.01
+
+
+      updateGhostTrajectories(
+        dx,
+        dy,
+        y
+      )
 
 
       for (
@@ -1318,6 +2036,9 @@ const QuantumBilliards = ecs.registerComponent({
 
       hud.flashHit()
 
+      fieldCollapsePulseTicks =
+        FIELD_COLLAPSE_PULSE_TICKS
+
       startTargetPulse()
 
 
@@ -1648,7 +2369,14 @@ const QuantumBilliards = ecs.registerComponent({
 
 
       //
-      // Preserve the predicted path briefly after release.
+      // Ghosts communicate uncertainty while aiming. Once the shot is
+      // committed, remove them and preserve only the authoritative path.
+      //
+      hideGhostTrajectories()
+
+
+      //
+      // Preserve the predicted central path briefly after release.
       //
       trajectoryHoldTicks =
         TRAJECTORY_HOLD_TICKS
@@ -1749,6 +2477,12 @@ const QuantumBilliards = ecs.registerComponent({
           }
         }
 
+
+        createGhostTrajectories()
+        createProbabilityField()
+        updateProbabilityField(
+          true
+        )
 
         resetBall()
 
@@ -1950,6 +2684,7 @@ const QuantumBilliards = ecs.registerComponent({
         // These visual/state timers run whether or not the
         // physical ball is currently moving.
         //
+        updateProbabilityField()
         updateTargetPulse()
 
         updateQuantumCollapse()

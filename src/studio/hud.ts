@@ -461,7 +461,7 @@ QuantumBilliardsHud {
         <div class="qb-intro-copy">
           <div class="qb-intro-step">
             <span class="qb-intro-number">1</span>
-            <div><strong>Aim.</strong> Drag to shape the cyan predicted trajectory.</div>
+            <div><strong>Aim.</strong> Drag to shape the bright cyan trajectory. Faint neighboring paths show uncertainty; the glowing landscape shows the live probability field.</div>
           </div>
 
           <div class="qb-intro-step">
