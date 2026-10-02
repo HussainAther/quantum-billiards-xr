@@ -15,6 +15,8 @@ import {
 
 import {
   getChallenge,
+  challengeBonuses,
+  gradeChallenge,
 } from '../core/challenges.ts'
 
 import {
@@ -170,6 +172,51 @@ const QuantumBilliards = ecs.registerComponent({
 
     let quantumCollapseTicks = 0
 
+    let challengeStartedAt = 0
+
+    let challengeStarted =
+      false
+
+    let challengeCleared =
+      false
+
+    let challengeTimeRemaining =
+      challenge.time
+
+    let finalChallengeGrade:
+      string | undefined
+
+    let finalChallengeBonus =
+      0
+
+
+    const updateChallengeHud = () => {
+      hud.updateChallenge({
+        name:
+          challenge.name,
+
+        targetText:
+          challengeCleared
+            ? '1 / 1'
+            : '0 / 1',
+
+        par:
+          challenge.par,
+
+        timeRemaining:
+          challengeTimeRemaining,
+
+        cleared:
+          challengeCleared,
+
+        grade:
+          finalChallengeGrade,
+
+        bonus:
+          finalChallengeBonus,
+      })
+    }
+
 
     const updateHud = () => {
       hud.update(
@@ -192,6 +239,8 @@ const QuantumBilliards = ecs.registerComponent({
         measurement:
           measurementScore,
       })
+
+      updateChallengeHud()
     }
 
 
@@ -1182,6 +1231,89 @@ const QuantumBilliards = ecs.registerComponent({
           .targetScore
 
 
+      if (
+        !challengeCleared
+      ) {
+        challengeCleared =
+          true
+
+        challengeStarted =
+          false
+
+        const bonus =
+          challengeBonuses({
+            cleared:
+              true,
+
+            challenge,
+
+            shotsTaken:
+              game.shots,
+
+            timeRemaining:
+              challengeTimeRemaining,
+
+            scarHits:
+              0,
+          })
+
+        finalChallengeBonus =
+          bonus.totalBonus
+
+        game.score +=
+          bonus.totalBonus
+
+        finalChallengeGrade =
+          gradeChallenge({
+            cleared:
+              true,
+
+            challenge,
+
+            shotsTaken:
+              game.shots,
+
+            timeRemaining:
+              challengeTimeRemaining,
+
+            scarHits:
+              0,
+          })
+
+        console.log(
+          'QB CHALLENGE CLEAR',
+          {
+            challenge:
+              challenge.name,
+
+            targetScore:
+              resolution.targetScore,
+
+            timeBonus:
+              bonus.timeBonus,
+
+            parBonus:
+              bonus.parBonus,
+
+            scarBonus:
+              bonus.scarBonus,
+
+            clearBonus:
+              bonus.clearBonus,
+
+            totalBonus:
+              bonus.totalBonus,
+
+            grade:
+              finalChallengeGrade,
+
+            totalScore:
+              game.score,
+          }
+        )
+      }
+
+
       updateHud()
 
       hud.flashHit()
@@ -1264,7 +1396,9 @@ const QuantumBilliards = ecs.registerComponent({
       if (
         debugMode() ===
           'forced' ||
-        moving
+        moving ||
+        !challengeStarted ||
+        challengeCleared
       ) {
         return
       }
@@ -1618,7 +1752,93 @@ const QuantumBilliards = ecs.registerComponent({
 
         resetBall()
 
+        challengeStarted =
+          false
+
+        challengeStartedAt =
+          0
+
+        challengeTimeRemaining =
+          challenge.time
+
         updateHud()
+
+
+        const startChallenge = () => {
+          if (
+            challengeStarted ||
+            challengeCleared
+          ) {
+            return
+          }
+
+          challengeStarted =
+            true
+
+          challengeStartedAt =
+            nowMs()
+
+          challengeTimeRemaining =
+            challenge.time
+
+          ;(hud as any).hideIntro?.()
+
+          updateHud()
+
+          console.log(
+            'QB CHALLENGE START',
+            {
+              challenge:
+                challenge.name,
+
+              par:
+                challenge.par,
+
+              time:
+                challenge.time,
+            }
+          )
+        }
+
+
+        ;(hud as any).onStart?.(
+          startChallenge
+        )
+
+
+        const introShown =
+          (hud as any).showIntro?.({
+            title:
+              challenge.name,
+
+            lesson:
+              challenge.lesson,
+
+            objective:
+              challenge.objective,
+
+            hint:
+              challenge.hint,
+
+            energy:
+              challenge.energy,
+
+            par:
+              challenge.par,
+
+            time:
+              challenge.time,
+          }) ?? false
+
+
+        //
+        // Headless Studio adapter tests use a lightweight HUD stub.
+        // If the intro API is unavailable there, start immediately so
+        // the existing gameplay tests retain their behavior.
+        //
+        if (!introShown) {
+          startChallenge()
+        }
 
 
         console.log(
@@ -1690,6 +1910,40 @@ const QuantumBilliards = ecs.registerComponent({
 
         const mode =
           debugMode()
+
+
+        if (
+          challengeStarted &&
+          !challengeCleared
+        ) {
+          const elapsed =
+            (
+              nowMs() -
+              challengeStartedAt
+            ) / 1000
+
+          const nextTime =
+            Math.max(
+              0,
+              challenge.time -
+                elapsed
+            )
+
+          if (
+            Math.ceil(nextTime) !==
+            Math.ceil(
+              challengeTimeRemaining
+            )
+          ) {
+            challengeTimeRemaining =
+              nextTime
+
+            updateChallengeHud()
+          } else {
+            challengeTimeRemaining =
+              nextTime
+          }
+        }
 
 
         //
